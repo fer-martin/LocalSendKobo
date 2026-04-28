@@ -1,10 +1,8 @@
-// localsend-recv: receptor LocalSend v2 para Kobo.
-// - Solo recibe, auto-acepta, sin PIN ni TLS.
-// - Muestra un único toast por sesión al completarse.
-// - Dispara rescan de biblioteca si se recibieron libros.
+// localsend-recv: receptor LocalSend v2 para Kobo, con UI de control.
 package main
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -16,9 +14,11 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -30,11 +30,11 @@ const (
 var (
 	alias       = flag.String("alias", "Kobo Aura", "nombre visible en LocalSend")
 	downloadDir = flag.String("dir", "/mnt/onboard/LocalSend", "carpeta destino")
-	noRescan    = flag.Bool("no-rescan", false, "no pedir rescan de biblioteca tras recibir libros")
+	noRescan    = flag.Bool("no-rescan", false, "no pedir rescan de biblioteca")
+	noUI        = flag.Bool("no-ui", false, "no mostrar diálogo de control")
 	fingerprint = randHex(16)
 )
 
-// Extensiones que disparan rescan en Nickel
 var bookExts = map[string]bool{
 	".epub": true, ".kepub": true, ".pdf": true,
 	".cbz": true, ".cbr": true, ".txt": true,
@@ -79,19 +79,16 @@ type prepareReq struct {
 	Files map[string]fileMeta `json:"files"`
 }
 
-// ---------- Estado de sesiones ----------
-
 type fileEntry struct {
-	Token    string
-	FileName string
-	Size     int64
-	Done     bool
+	Token, FileName string
+	Size            int64
+	Done            bool
 }
 
 type session struct {
 	senderAlias string
 	files       map[string]*fileEntry
-	saved       []string // rutas ya guardadas
+	saved       []string
 }
 
 var (
@@ -139,23 +136,31 @@ func safeName(n string) string {
 
 func hasBook(paths []string) bool {
 	for _, p := range paths {
-		ext := strings.ToLower(filepath.Ext(p))
-		if bookExts[ext] {
+		if bookExts[strings.ToLower(filepath.Ext(p))] {
 			return true
 		}
 	}
 	return false
 }
 
-// ---------- Notificaciones ----------
+// ---------- Notificaciones / UI ----------
 
-// notify: toast nativo vía NickelDBus; fallback a FBInk.
+func haveQndb() bool {
+	_, err := exec.LookPath("qndb")
+	return err == nil
+}
+
+func haveFbink() bool {
+	_, err := exec.LookPath("fbink")
+	return err == nil
+}
+
 func notify(title, msg string) {
-	if _, err := exec.LookPath("qndb"); err == nil {
+	if haveQndb() {
 		_ = exec.Command("qndb", "-m", "mwcToast", "3000", title, msg).Run()
 		return
 	}
-	if _, err := exec.LookPath("fbink"); err == nil {
+	if haveFbink() {
 		full := fmt.Sprintf("%s: %s", title, msg)
 		_ = exec.Command("fbink", "-q", "-y", "-3", "-m", "-p", full).Run()
 		go func() {
@@ -166,10 +171,7 @@ func notify(title, msg string) {
 }
 
 func rescanLibrary() {
-	if *noRescan {
-		return
-	}
-	if _, err := exec.LookPath("qndb"); err != nil {
+	if *noRescan || !haveQndb() {
 		return
 	}
 	if err := exec.Command("qndb", "-m", "pfmRescanBooks").Run(); err != nil {
@@ -177,11 +179,42 @@ func rescanLibrary() {
 	}
 }
 
+// showControlDialog abre un diálogo modal de Nickel y bloquea hasta que el
+// usuario toca "Detener" (o alguien llama a dismissDialog desde fuera).
+func showControlDialog() error {
+	body := fmt.Sprintf(
+		"Receptor LocalSend activo.\n\n• Alias: %s\n• Puerto: %d\n• Destino: %s\n\nToca «Detener» para cerrar el servidor.",
+		*alias, lsPort, *downloadDir,
+	)
+	cmd := exec.Command("qndb",
+		"-t", "86400000", // 24 h por si acaso
+		"-s", "dlgConfirmResult",
+		"-m", "dlgConfirmCreate",
+		"-m", "dlgConfirmSetModal", "true",
+		"-m", "dlgConfirmSetTitle", "LocalSend",
+		"-m", "dlgConfirmSetBody", body,
+		"-m", "dlgConfirmSetAccept", "Detener",
+		"-m", "dlgConfirmSetReject", "",
+		"-m", "dlgConfirmShow",
+	)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("qndb dlg: %w (out=%s)", err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+// dismissDialog cierra el diálogo de control si está abierto (vía señal externa).
+func dismissDialog() {
+	if !haveQndb() {
+		return
+	}
+	_ = exec.Command("qndb", "-m", "dlgConfirmAccept").Run()
+}
+
 // ---------- Handlers HTTP ----------
 
-func handleInfo(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, 200, info(false))
-}
+func handleInfo(w http.ResponseWriter, r *http.Request) { writeJSON(w, 200, info(false)) }
 
 func handleRegister(w http.ResponseWriter, r *http.Request) {
 	_, _ = io.Copy(io.Discard, r.Body)
@@ -194,14 +227,11 @@ func handlePrepare(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad json", http.StatusBadRequest)
 		return
 	}
-
-	// Extraer alias del emisor (best-effort)
 	senderAlias := "?"
 	var senderInfo DeviceInfo
 	if json.Unmarshal(req.Info, &senderInfo) == nil && senderInfo.Alias != "" {
 		senderAlias = senderInfo.Alias
 	}
-
 	sid := randHex(16)
 	tokens := map[string]string{}
 	fmap := map[string]*fileEntry{}
@@ -213,18 +243,13 @@ func handlePrepare(w http.ResponseWriter, r *http.Request) {
 	mu.Lock()
 	sessions[sid] = &session{senderAlias: senderAlias, files: fmap}
 	mu.Unlock()
-
 	log.Printf("[LS] prepare: %d archivo(s) desde %q", len(req.Files), senderAlias)
-	writeJSON(w, http.StatusOK, map[string]any{
-		"sessionId": sid,
-		"files":     tokens,
-	})
+	writeJSON(w, http.StatusOK, map[string]any{"sessionId": sid, "files": tokens})
 }
 
 func handleUpload(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	sid, fid, tok := q.Get("sessionId"), q.Get("fileId"), q.Get("token")
-
 	mu.Lock()
 	ss, ok := sessions[sid]
 	mu.Unlock()
@@ -257,7 +282,6 @@ func handleUpload(w http.ResponseWriter, r *http.Request) {
 	}
 	log.Printf("[LS] guardado: %s (%d B)", out, n)
 
-	// Marcar completo y ver si la sesión terminó
 	var done bool
 	var saved []string
 	var sender string
@@ -281,7 +305,6 @@ func handleUpload(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 
 	if done {
-		// Notificar fuera del hot path HTTP
 		go func() {
 			var msg string
 			if len(saved) == 1 {
@@ -307,7 +330,7 @@ func handleCancel(w http.ResponseWriter, r *http.Request) {
 
 // ---------- Descubrimiento UDP ----------
 
-func announcer() {
+func announcer(stop <-chan struct{}) {
 	addr := &net.UDPAddr{IP: net.ParseIP(mcastGroup), Port: lsPort}
 	c, err := net.DialUDP("udp4", nil, addr)
 	if err != nil {
@@ -316,29 +339,39 @@ func announcer() {
 	}
 	defer c.Close()
 	msg, _ := json.Marshal(info(true))
+	t := time.NewTicker(5 * time.Second)
+	defer t.Stop()
+	// envío inmediato
+	_, _ = c.Write(msg)
 	for {
-		if _, err := c.Write(msg); err != nil {
-			log.Printf("[UDP tx] %v", err)
+		select {
+		case <-stop:
+			return
+		case <-t.C:
+			if _, err := c.Write(msg); err != nil {
+				log.Printf("[UDP tx] %v", err)
+			}
 		}
-		time.Sleep(5 * time.Second)
 	}
 }
 
-func listener() {
+func listener(stop <-chan struct{}) {
 	addr := &net.UDPAddr{IP: net.ParseIP(mcastGroup), Port: lsPort}
 	c, err := net.ListenMulticastUDP("udp4", nil, addr)
 	if err != nil {
 		log.Printf("[UDP rx] %v", err)
 		return
 	}
+	defer c.Close()
+	go func() { <-stop; _ = c.Close() }()
+
 	_ = c.SetReadBuffer(65536)
 	reply, _ := json.Marshal(info(false))
 	buf := make([]byte, 8192)
 	for {
 		n, src, err := c.ReadFromUDP(buf)
 		if err != nil {
-			log.Printf("[UDP rx] %v", err)
-			continue
+			return
 		}
 		var m DeviceInfo
 		if json.Unmarshal(buf[:n], &m) != nil {
@@ -364,6 +397,7 @@ func main() {
 	}
 	log.Printf("[LS] alias=%q fp=%s dir=%s", *alias, fingerprint, *downloadDir)
 
+	// HTTP
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/localsend/v2/info", handleInfo)
 	mux.HandleFunc("/api/localsend/v2/register", handleRegister)
@@ -371,16 +405,58 @@ func main() {
 	mux.HandleFunc("/api/localsend/v2/upload", handleUpload)
 	mux.HandleFunc("/api/localsend/v2/cancel", handleCancel)
 
-	go listener()
-	go announcer()
+	srv := &http.Server{Addr: fmt.Sprintf(":%d", lsPort), Handler: mux}
 
-	addr := fmt.Sprintf(":%d", lsPort)
-	log.Printf("[LS] HTTP en %s", addr)
-	srv := &http.Server{
-		Addr:         addr,
-		Handler:      mux,
-		ReadTimeout:  0, // sin límite: archivos grandes
-		WriteTimeout: 0,
+	stopUDP := make(chan struct{})
+	go listener(stopUDP)
+	go announcer(stopUDP)
+
+	go func() {
+		log.Printf("[LS] HTTP en %s", srv.Addr)
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Fatal(err)
+		}
+	}()
+
+	// UI
+	useUI := !*noUI && haveQndb()
+	var uiDone chan struct{}
+	if useUI {
+		uiDone = make(chan struct{})
+		go func() {
+			defer close(uiDone)
+			if err := showControlDialog(); err != nil {
+				log.Printf("[UI] %v", err)
+			}
+		}()
+		// pequeño "ya estoy" además del diálogo
+		notify("LocalSend", fmt.Sprintf("Activo en puerto %d", lsPort))
+	} else {
+		log.Println("[LS] sin UI; cierra con SIGTERM (killall -TERM localsend-recv)")
+		notify("LocalSend", fmt.Sprintf("Activo en puerto %d", lsPort))
 	}
-	log.Fatal(srv.ListenAndServe())
+
+	// Esperar señal o cierre por usuario
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+
+	select {
+	case sig := <-sigCh:
+		log.Printf("[LS] señal: %v", sig)
+		if useUI {
+			dismissDialog()
+			<-uiDone
+		}
+	case <-uiDone: // bloquea para siempre si useUI=false (canal nil)
+		log.Println("[LS] cerrado por usuario")
+	}
+
+	// Shutdown ordenado
+	close(stopUDP)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	_ = srv.Shutdown(ctx)
+
+	notify("LocalSend", "Receptor detenido")
+	log.Println("[LS] bye")
 }
