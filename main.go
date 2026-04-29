@@ -179,23 +179,17 @@ func rescanLibrary() {
 	}
 }
 
-// showControlDialog abre un diálogo modal de Nickel y bloquea hasta que el
-// usuario toca "Detener" (o alguien llama a dismissDialog desde fuera).
+// showControlDialog: diálogo modal con un solo botón "Detener".
+// Bloquea hasta que el usuario lo toca o hasta que dismissDialog() lo cierra.
 func showControlDialog() error {
 	body := fmt.Sprintf(
 		"Receptor LocalSend activo.\n\n• Alias: %s\n• Puerto: %d\n• Destino: %s\n\nToca «Detener» para cerrar el servidor.",
 		*alias, lsPort, *downloadDir,
 	)
 	cmd := exec.Command("qndb",
-		"-t", "86400000", // 24 h por si acaso
+		"-t", "86400000", // 24 h
 		"-s", "dlgConfirmResult",
-		"-m", "dlgConfirmCreate",
-		"-m", "dlgConfirmSetModal", "true",
-		"-m", "dlgConfirmSetTitle", "LocalSend",
-		"-m", "dlgConfirmSetBody", body,
-		"-m", "dlgConfirmSetAccept", "Detener",
-		"-m", "dlgConfirmSetReject", "",
-		"-m", "dlgConfirmShow",
+		"-m", "dlgConfirmAccept", "LocalSend", body, "Detener",
 	)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -204,12 +198,12 @@ func showControlDialog() error {
 	return nil
 }
 
-// dismissDialog cierra el diálogo de control si está abierto (vía señal externa).
+// dismissDialog cierra el diálogo desde fuera (si lo hay).
 func dismissDialog() {
 	if !haveQndb() {
 		return
 	}
-	_ = exec.Command("qndb", "-m", "dlgConfirmAccept").Run()
+	_ = exec.Command("qndb", "-m", "dlgConfirmClose").Run()
 }
 
 // ---------- Handlers HTTP ----------
