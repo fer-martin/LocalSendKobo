@@ -1,1 +1,5 @@
-localsend-recv
+/localsend-recv
+/localsend-recv-kobo
+/downloads/
+/Makefile.local
+*.tgz
