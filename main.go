@@ -382,6 +382,34 @@ func listener(stop <-chan struct{}) {
 	}
 }
 
+// ---------- Funciones de Wi-Fi ----------
+
+// forceWifi activa o desactiva la persistencia del Wi-Fi en Nickel.
+// Mientras esté en true, Nickel no suspende la radio.
+func forceWifi(on bool) {
+	if !haveQndb() {
+		return
+	}
+	arg := "false"
+	if on {
+		arg = "true"
+	}
+	if err := exec.Command("qndb", "-m", "nsForceWifi", arg).Run(); err != nil {
+		log.Printf("[wifi] nsForceWifi %s: %v", arg, err)
+	} else {
+		log.Printf("[wifi] nsForceWifi %s OK", arg)
+	}
+}
+
+// reconnectWifi pide a Nickel que se conecte sin abrir el diálogo.
+// Útil como red de seguridad si la radio cayó por otro motivo.
+func reconnectWifi() {
+	if !haveQndb() {
+		return
+	}
+	_ = exec.Command("qndb", "-m", "wfmConnectWirelessSilently").Run()
+}
+
 // ---------- main ----------
 
 func main() {
@@ -429,6 +457,8 @@ func main() {
 		log.Println("[LS] sin UI; cierra con SIGTERM (killall -TERM localsend-recv)")
 		notify("LocalSend", fmt.Sprintf("Activo en puerto %d", lsPort))
 	}
+	forceWifi(true)
+	defer forceWifi(false) // desactiva al salir del main
 
 	// Esperar señal o cierre por usuario
 	sigCh := make(chan os.Signal, 1)

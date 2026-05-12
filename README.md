@@ -188,7 +188,7 @@ This is a deliberately minimal implementation. Read this section before exposing
 - **Plain HTTP, no TLS** — every byte of every file is unencrypted on the wire.
 - **No PIN, auto-accept** — any host on the same L2/multicast domain that can reach UDP `53317` can push files to your Kobo. Fine on a home Wi-Fi; **not** fine on hotel/coffee-shop networks. If your router supports "AP isolation" or "client isolation", it will break discovery (which is what we want elsewhere).
 - **FAT32 limit** — `/mnt/onboard` is FAT32; files larger than 4 GiB cannot be stored.
-- **Aggressive Wi-Fi sleep** — stock Nickel suspends Wi-Fi quickly. Plan to send files in one continuous session, or use KOReader's "Wi-Fi always on" setting.
+- **Aggressive Wi-Fi sleep** — stock Nickel suspends the Wi-Fi radio after a few minutes of inactivity. While the receiver is running it requests nsForceWifi(true) via NickelDBus, which prevents this on most firmwares. If your firmware ignores it, edit [PowerOptions] ForceWifiOn=true in Kobo eReader.conf (requires a Nickel restart and applies permanently, with battery cost).
 - **Modal dialog blocks Nickel UI** — while the "Stop" dialog is shown you can't navigate to a book. Use `-no-ui` if you want the receiver to live alongside reading.
 
 ---
