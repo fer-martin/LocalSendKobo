@@ -93,3 +93,10 @@ fmt: ## gofmt
 .PHONY: clean
 clean: ## Borra binarios locales
 	rm -f $(BINARY) $(BINARY)-kobo
+
+.PHONY: release
+release: ## Crea tag vX.Y.Z y lo pushea (usar: make release V=0.1.0)
+	@test -n "$(V)" || { echo "use: make release V=0.1.0"; exit 1; }
+	git tag -a "v$(V)" -m "release v$(V)"
+	git push origin "v$(V)"
+	@echo "tag v$(V) pushed — see Actions"

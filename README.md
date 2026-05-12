@@ -1,5 +1,8 @@
 # kobo-localsend
 
+[![Release](https://img.shields.io/github/v/release/<user>/<repo>?logo=github)](../../releases/latest)
+[![Downloads](https://img.shields.io/github/downloads/<user>/<repo>/total?logo=github)](../../releases)
+
 A minimal [LocalSend](https://localsend.org/) **v2 receiver** for Kobo e-readers, written in Go.
 
 Send EPUBs, PDFs, and any other file straight from your phone or laptop to your Kobo over Wi-Fi — no USB cable, no cloud, no Calibre, no Dropbox folder dance.
@@ -122,6 +125,30 @@ make deploy-nm                     # install NickelMenu start/stop items
 ```
 
 Restart Nickel for the new menu entries to appear (USB plug + unplug, or `ssh root@<kobo-ip> qndb -m mhRestartNickel` if your build exposes it).
+
+### Prebuilt binaries
+
+If you don't want to install Go, grab the latest binary from the [Releases page](../../releases):
+
+| Kobo model(s)                                                | Asset                         |
+| ------------------------------------------------------------ | ----------------------------- |
+| All modern Kobos (Aura, Libra, Clara, Forma, Sage, Elipsa, …) | `localsend-recv-linux-armv7`  |
+| Very old Kobos (original eReader, Touch N905)                | `localsend-recv-linux-armv6`  |
+| Future ARM64 firmwares                                       | `localsend-recv-linux-arm64`  |
+
+```sh
+# Replace the URL/asset with the right one for your device
+curl -L -o localsend-recv \
+  https://github.com/<user>/<repo>/releases/latest/download/localsend-recv-linux-armv7
+
+# Verify (optional)
+curl -L https://github.com/<user>/<repo>/releases/latest/download/SHA256SUMS.txt | \
+  grep linux-armv7 | sha256sum -c
+
+# Deploy
+scp localsend-recv root@<kobo-ip>:/mnt/onboard/.adds/localsend/
+ssh root@<kobo-ip> 'chmod +x /mnt/onboard/.adds/localsend/localsend-recv'
+```
 
 ### Manual
 
