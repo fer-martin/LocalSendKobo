@@ -1,0 +1,89 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:        # permitir disparar a mano desde la UI
+
+permissions:
+  contents: write           # necesario para crear el release
+
+jobs:
+  build:
+    name: Build ${{ matrix.name }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-armv7
+            goos: linux
+            goarch: arm
+            goarm: '7'
+          - name: linux-armv6
+            goos: linux
+            goarch: arm
+            goarm: '6'
+          - name: linux-arm64
+            goos: linux
+            goarch: arm64
+            goarm: ''
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0    # para que git describe vea los tags
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+          cache: true
+
+      - name: Build
+        env:
+          CGO_ENABLED: '0'
+          GOOS:   ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          GOARM:  ${{ matrix.goarm }}
+        run: |
+          VERSION="${GITHUB_REF_NAME:-dev}"
+          OUT="localsend-recv-${{ matrix.name }}"
+          go build -trimpath \
+            -ldflags="-s -w -X main.Version=${VERSION}" \
+            -o "${OUT}" .
+          file "${OUT}"
+          ls -lh "${OUT}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: localsend-recv-${{ matrix.name }}
+          path: localsend-recv-${{ matrix.name }}
+          retention-days: 7
+
+  release:
+    name: Publish release
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Generate checksums
+        working-directory: dist
+        run: |
+          sha256sum localsend-recv-* > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/localsend-recv-*
+            dist/SHA256SUMS.txt
+          generate_release_notes: true
+          draft: false
+          prerelease: ${{ contains(github.ref_name, '-') }}

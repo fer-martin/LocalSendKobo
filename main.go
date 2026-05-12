@@ -29,6 +29,10 @@ const (
 
 const koboVersionFile = "/mnt/onboard/.kobo/version"
 
+// Version se inyecta en build-time vía -ldflags.
+var Version = "dev"
+var showVersion = flag.Bool("version", false, "print version and exit")
+
 var (
 	alias       = flag.String("alias", "", "nombre visible en LocalSend (default: auto-detected desde /mnt/onboard/.kobo/version)")
 	downloadDir = flag.String("dir", "/mnt/onboard/LocalSend", "carpeta destino")
@@ -466,6 +470,10 @@ func reconnectWifi() {
 
 func main() {
 	flag.Parse()
+	if *showVersion {
+		fmt.Println(Version)
+		os.Exit(0)
+	}	
 	if *alias == "" {
     	*alias = detectAlias()
 	}

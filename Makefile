@@ -1,6 +1,7 @@
 # ---- Configuración ------------------------------------------------------
 BINARY      := localsend-recv
 PKG         := .
+VERSION := $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 
 # Kobo (ajustá a tu IP)
 KOBO_HOST   ?= 192.168.1.50
@@ -13,7 +14,7 @@ LOCAL_DIR   ?= ./downloads
 LOCAL_ALIAS ?= Dev PC
 
 # Flags de compilación
-LDFLAGS     := -s -w
+LDFLAGS     := -s -w -X main.Version=$(VERSION)
 GOFLAGS     := -trimpath
 
 # Cross-compile target (Kobo Aura = ARMv7)
