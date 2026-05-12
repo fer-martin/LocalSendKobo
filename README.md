@@ -1,7 +1,7 @@
 # kobo-localsend
 
-[![Release](https://img.shields.io/github/v/release/<user>/<repo>?logo=github)](../../releases/latest)
-[![Downloads](https://img.shields.io/github/downloads/<user>/<repo>/total?logo=github)](../../releases)
+[![Release](https://img.shields.io/github/v/release/fer-martin/LocalSendKobo?logo=github)](../../releases/latest)
+[![Downloads](https://img.shields.io/github/downloads/fer-martin/LocalSendKobo/total?logo=github)](../../releases)
 
 A minimal [LocalSend](https://localsend.org/) **v2 receiver** for Kobo e-readers, written in Go.
 
