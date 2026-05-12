@@ -2,6 +2,7 @@
 
 [![Release](https://img.shields.io/github/v/release/fer-martin/LocalSendKobo?logo=github)](../../releases/latest)
 [![Downloads](https://img.shields.io/github/downloads/fer-martin/LocalSendKobo/total?logo=github)](../../releases)
+[![Companion: LocalSendCalibre](https://img.shields.io/badge/companion-LocalSendCalibre-blue?logo=calibre)](https://github.com/fer-martin/LocalSendCalibre)
 
 A minimal [LocalSend](https://localsend.org/) **v2 receiver** for Kobo e-readers, written in Go.
 
@@ -19,7 +20,7 @@ Send EPUBs, PDFs, and any other file straight from your phone or laptop to your 
 - 📚 **Library auto-rescan** — when books are received, Nickel rescans automatically and they appear on the home screen
 - 🪶 **Single static binary** — no Python, no shared libraries, no runtime to install
 - 🧊 **Small** — < 6 MB stripped
-
+> 💡 **Tip:** pair this with **[LocalSendCalibre](https://github.com/fer-martin/LocalSendCalibre)** — a Calibre plugin that adds a "Send via LocalSend" action, so you can push books from your Calibre library straight to your Kobo in one click, no cables needed.
 ---
 
 ## How it works
@@ -289,6 +290,22 @@ SSH_OPTS += -oHostKeyAlgorithms=+ssh-rsa -oPubkeyAcceptedKeyTypes=+ssh-rsa
 ├── Makefile     # build / deploy / start / stop / log
 └── README.md
 ```
+
+---
+
+## Companion tools
+
+### LocalSendCalibre
+
+[**LocalSendCalibre**](https://github.com/fer-martin/LocalSendCalibre) is a [Calibre](https://calibre-ebook.com/) plugin that brings LocalSend support into your library manager. Combined with `kobo-localsend`, it gives you a one-click pipeline from your Calibre library to the Kobo, without touching USB cables or device drivers.
+
+**Typical workflow:**
+
+1. On the Kobo: NickelMenu → **LocalSend (start)**.
+2. In Calibre: right-click a book → **Send via LocalSend** → pick your Kobo (it shows up as e.g. `Kobo Aura 1234`).
+3. The file is transferred over Wi-Fi, the on-device toast confirms `Received: <title>.epub`, and Nickel rescans the library automatically.
+
+`kobo-localsend` works with any LocalSend v2 client (Android / iOS / Windows / macOS / Linux), but LocalSendCalibre is the most ergonomic option if your e-book collection already lives in Calibre.
 
 ---
 
