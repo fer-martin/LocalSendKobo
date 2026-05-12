@@ -27,8 +27,10 @@ const (
 	lsPort     = 53317
 )
 
+const koboVersionFile = "/mnt/onboard/.kobo/version"
+
 var (
-	alias       = flag.String("alias", "Kobo Aura", "nombre visible en LocalSend")
+	alias       = flag.String("alias", "", "nombre visible en LocalSend (default: auto-detected desde /mnt/onboard/.kobo/version)")
 	downloadDir = flag.String("dir", "/mnt/onboard/LocalSend", "carpeta destino")
 	noRescan    = flag.Bool("no-rescan", false, "no pedir rescan de biblioteca")
 	noUI        = flag.Bool("no-ui", false, "no mostrar diálogo de control")
@@ -97,6 +99,56 @@ var (
 )
 
 // ---------- Helpers ----------
+
+// detectAlias arma un alias tipo "Kobo Aura 1234" leyendo .kobo/version.
+// Fuera de un Kobo, cae al hostname.
+func detectAlias() string {
+	serial, model := readKoboVersion(koboVersionFile)
+	if model == "" {
+		if h, err := os.Hostname(); err == nil && h != "" {
+			return h
+		}
+		return "LocalSend"
+	}
+	model = prettyModel(model)
+	if len(serial) >= 4 {
+		return fmt.Sprintf("%s %s", model, serial[len(serial)-4:])
+	}
+	return model
+}
+
+// readKoboVersion lee el archivo de versión de Kobo y devuelve (serie, modelo).
+// Formato esperado: "SERIAL,FW,TIMESTAMP,[UUID,]MODEL".
+func readKoboVersion(path string) (serial, model string) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return "", ""
+	}
+	line := strings.TrimSpace(string(b))
+	if line == "" {
+		return "", ""
+	}
+	parts := strings.Split(line, ",")
+	serial = strings.TrimSpace(parts[0])
+	model = strings.TrimSpace(parts[len(parts)-1])
+	return
+}
+
+// prettyModel pasa "kobo aura h2o" a "Kobo Aura H2O".
+func prettyModel(s string) string {
+	parts := strings.Fields(s)
+	for i, p := range parts {
+		switch strings.ToLower(p) {
+		case "h2o", "hd", "2e":
+			parts[i] = strings.ToUpper(p)
+		default:
+			if len(p) > 0 {
+				parts[i] = strings.ToUpper(p[:1]) + strings.ToLower(p[1:])
+			}
+		}
+	}
+	return strings.Join(parts, " ")
+}
 
 func randHex(n int) string {
 	b := make([]byte, n)
@@ -414,6 +466,9 @@ func reconnectWifi() {
 
 func main() {
 	flag.Parse()
+	if *alias == "" {
+    	*alias = detectAlias()
+	}
 	if err := os.MkdirAll(*downloadDir, 0o755); err != nil {
 		log.Fatalf("no puedo crear %s: %v", *downloadDir, err)
 	}

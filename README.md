@@ -157,7 +157,9 @@ scp /tmp/nm-localsend root@<kobo-ip>:/mnt/onboard/.adds/nm/localsend
 ### Flags
 
 ```
--alias       Device name shown in LocalSend (default: "Kobo Aura")
+-alias       Device name shown in LocalSend 
+             (default: auto-detected as "<Model> <last-4-of-serial>" 
+             from /mnt/onboard/.kobo/version)
 -dir         Destination directory (default: /mnt/onboard/LocalSend)
 -no-rescan   Skip Nickel library rescan after receiving books
 -no-ui       Daemon mode: no modal dialog, stop with SIGTERM
