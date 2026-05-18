@@ -108,17 +108,32 @@ var (
 // Fuera de un Kobo, cae al hostname.
 func detectAlias() string {
 	serial, model := readKoboVersion(koboVersionFile)
-	if model == "" {
-		if h, err := os.Hostname(); err == nil && h != "" {
-			return h
-		}
-		return "LocalSend"
-	}
-	model = prettyModel(model)
+	suffix := ""
 	if len(serial) >= 4 {
-		return fmt.Sprintf("%s %s", model, serial[len(serial)-4:])
+		suffix = " " + serial[len(serial)-4:]
 	}
-	return model
+	if model != "" {
+		return strings.TrimSpace(model + suffix)
+	}
+	// No es un Kobo (o no se pudo parsear): usar hostname.
+	if h, err := os.Hostname(); err == nil && h != "" {
+		return h + suffix
+	}
+	return "LocalSend" + suffix
+}
+
+// localIP devuelve la IP IPv4 que el SO usaría para tráfico de LAN saliente.
+// No envía paquetes; sólo dispara la decisión de routing. Vacía si no hay red.
+func localIP() string {
+	conn, err := net.Dial("udp", "192.0.2.1:1") // TEST-NET-1, no enruta a ningún lado
+	if err != nil {
+		return ""
+	}
+	defer conn.Close()
+	if addr, ok := conn.LocalAddr().(*net.UDPAddr); ok {
+		return addr.IP.String()
+	}
+	return ""
 }
 
 // Códigos de modelo Kobo (últimos 3 hex del UUID en .kobo/version).
