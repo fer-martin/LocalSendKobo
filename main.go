@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"html"
 	"io"
 	"log"
 	"net"
@@ -326,9 +327,22 @@ func rescanLibrary() {
 // showControlDialog: diálogo modal con un solo botón "Detener".
 // Bloquea hasta que el usuario lo toca o hasta que dismissDialog() lo cierra.
 func showControlDialog() error {
+	ip := localIP()
+	if ip == "" {
+		ip = "(sin red)"
+	}
+	// Nickel renderiza el body como rich-text Qt: usar <br>, no \n.
 	body := fmt.Sprintf(
-		"Receptor LocalSend activo.\n\n• Alias: %s\n• Puerto: %d\n• Destino: %s\n\nToca «Detener» para cerrar el servidor.",
-		*alias, lsPort, *downloadDir,
+		"Receptor LocalSend activo.<br><br>"+
+			"• Alias: <b>%s</b><br>"+
+			"• IP: <b>%s</b><br>"+
+			"• Puerto: <b>%d</b><br>"+
+			"• Destino: %s<br><br>"+
+			"Toca «Detener» para cerrar el servidor.",
+		html.EscapeString(*alias),
+		html.EscapeString(ip),
+		lsPort,
+		html.EscapeString(*downloadDir),
 	)
 	cmd := exec.Command("qndb",
 		"-t", "86400000", // 24 h
