@@ -121,29 +121,102 @@ func detectAlias() string {
 	return model
 }
 
-// readKoboVersion lee el archivo de versión de Kobo y devuelve (serie, modelo).
-// Formato esperado: "SERIAL,FW,TIMESTAMP,[UUID,]MODEL".
+// Códigos de modelo Kobo (últimos 3 hex del UUID en .kobo/version).
+// Fuente: KOReader / mobileread. Si tu modelo no está, agregalo y mandá PR :)
+var koboModels = map[string]string{
+	"310": "Kobo Touch A",
+	"320": "Kobo Touch B",
+	"330": "Kobo Touch C",
+	"340": "Kobo Mini",
+	"350": "Kobo Glo",
+	"360": "Kobo Aura HD",
+	"370": "Kobo Aura",
+	"371": "Kobo Aura H2O",
+	"372": "Kobo Aura H2O Edition 2 v1",
+	"373": "Kobo Aura H2O Edition 2 v2",
+	"374": "Kobo Aura Edition 2 v1",
+	"375": "Kobo Aura Edition 2 v2",
+	"376": "Kobo Glo HD",
+	"377": "Kobo Touch 2.0",
+	"378": "Kobo Aura One",
+	"379": "Kobo Aura One Limited Edition",
+	"37b": "Kobo Aura SE",
+	"381": "Kobo Clara HD",
+	"382": "Kobo Forma",
+	"384": "Kobo Forma 32GB",
+	"386": "Kobo Aura H2O Edition 2 v2",
+	"387": "Kobo Aura SE",
+	"388": "Kobo Nia",
+	"389": "Kobo Elipsa",
+	"38b": "Kobo Libra H2O",
+	"393": "Kobo Sage",
+	"394": "Kobo Libra 2",
+	"396": "Kobo Elipsa 2E",
+	"397": "Kobo Clara 2E",
+	"398": "Kobo Clara BW",
+	"399": "Kobo Clara Colour",
+	"39a": "Kobo Libra Colour",
+}
+
+// readKoboVersion parsea /mnt/onboard/.kobo/version y devuelve (serial, model).
+// Tolerante a las dos variantes conocidas:
+//   - SERIAL,FW,TIMESTAMP,DEVICE_UUID                       (más viejo)
+//   - SERIAL,FW,TIMESTAMP,DEVICE_UUID,MODEL_NAME            (más nuevo)
 func readKoboVersion(path string) (serial, model string) {
 	b, err := os.ReadFile(path)
 	if err != nil {
 		return "", ""
 	}
-	line := strings.TrimSpace(string(b))
-	if line == "" {
-		return "", ""
+	parts := strings.Split(strings.TrimSpace(string(b)), ",")
+	for i, p := range parts {
+		parts[i] = strings.TrimSpace(p)
 	}
-	parts := strings.Split(line, ",")
-	serial = strings.TrimSpace(parts[0])
-	model = strings.TrimSpace(parts[len(parts)-1])
-	return
+	if len(parts) > 0 {
+		serial = parts[0]
+	}
+
+	// 1) ¿Hay un campo que sea texto "kobo …"?
+	for _, p := range parts[1:] {
+		if strings.HasPrefix(strings.ToLower(p), "kobo") {
+			return serial, prettyModel(p)
+		}
+	}
+
+	// 2) Si no, buscar el campo UUID y mapear los últimos 3 hex.
+	for _, p := range parts[1:] {
+		if looksLikeDeviceUUID(p) {
+			code := strings.ToLower(p[len(p)-3:])
+			if name, ok := koboModels[code]; ok {
+				return serial, name
+			}
+			// código desconocido: devolver el código en sí, mejor que nada
+			return serial, "Kobo " + strings.ToUpper(code)
+		}
+	}
+	return serial, ""
 }
 
-// prettyModel pasa "kobo aura h2o" a "Kobo Aura H2O".
+func looksLikeDeviceUUID(s string) bool {
+	// Aceptamos cualquier cadena con suficientes dígitos hex al final;
+	// los firmwares varían en cantidad de ceros/guiones.
+	if len(s) < 3 {
+		return false
+	}
+	for _, r := range s[len(s)-3:] {
+		if !(r >= '0' && r <= '9') && !(r >= 'a' && r <= 'f') && !(r >= 'A' && r <= 'F') {
+			return false
+		}
+	}
+	// y al menos un dígito hex más antes
+	return strings.ContainsAny(s, "-0")
+}
+
+// prettyModel pasa "kobo libra h2o" a "Kobo Libra H2O" (sólo para el camino 1).
 func prettyModel(s string) string {
 	parts := strings.Fields(s)
 	for i, p := range parts {
 		switch strings.ToLower(p) {
-		case "h2o", "hd", "2e":
+		case "h2o", "hd", "2e", "se", "bw":
 			parts[i] = strings.ToUpper(p)
 		default:
 			if len(p) > 0 {
