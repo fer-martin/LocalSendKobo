@@ -18,6 +18,7 @@ Send EPUBs, PDFs, and any other file straight from your phone or laptop to your 
 - 📦 **LocalSend v2 compatible** — works with the official Android, iOS, Windows, macOS, and Linux clients
 - 🔔 **Native Kobo UI** — Nickel toasts on each completed transfer, plus a modal "Stop" dialog so you always know the receiver is running
 - 📚 **Library auto-rescan** — when books are received, Nickel rescans automatically and they appear on the home screen
+- 🗂️ **Calibre-style folders** — received EPUB/KEPUB books land in `{Author}/{Title}.epub`, just like when you send them over USB via Calibre
 - 🪶 **Single static binary** — no Python, no shared libraries, no runtime to install
 - 🧊 **Small** — < 6 MB stripped
 > 💡 **Tip:** pair this with **[LocalSendCalibre](https://github.com/fer-martin/LocalSendCalibre)** — a Calibre plugin that adds a "Send via LocalSend" action, so you can push books from your Calibre library straight to your Kobo in one click, no cables needed.
@@ -178,9 +179,18 @@ scp /tmp/nm-localsend root@<kobo-ip>:/mnt/onboard/.adds/nm/localsend
    - Toast: `LocalSend: Active on port 53317`.
    - A modal dialog with a **Stop** button confirms it's running.
 2. Open LocalSend on your phone or laptop. Your Kobo (e.g. `Kobo Aura`) shows up — send files.
-3. Each completed *session* triggers a toast (`Received: foo.epub` or `Received 5 files from Pixel 7`).
+3. Each completed *session* triggers a toast (`Received: Saint-Exupéry, Antoine de/El Principito.epub` for organized books, or `Received 5 files from Pixel 7`).
 4. If any received files are books (`.epub`, `.kepub`, `.pdf`, `.cbz`, …), the Nickel library is rescanned automatically.
 5. Tap **Stop**, or NickelMenu → **LocalSend (stop)**, to shut down. A final toast (`Receiver stopped`) confirms exit.
+
+### Organization (Calibre-style folders)
+
+Calibre sends books to the Kobo as `/mnt/onboard/{Author}/{Title}.epub`. This receiver does the same for books arriving over LocalSend:
+
+- When an `.epub`/`.kepub` arrives, its **metadata is read from the file itself** (`META-INF/container.xml` → OPF), never guessed from the filename.
+- The author used for the folder follows the same precedence as Calibre: `calibre:author_sort` → `opf:file-as` → `dc:creator`.
+- Folder and file names are sanitized for FAT32 (invalid characters removed, length capped), and a title that already exists gets a `_1`, `_2`, … suffix instead of being overwritten.
+- Anything that isn't an EPUB, or whose metadata can't be parsed, stays in `-dir` (`/mnt/onboard/LocalSend` by default). Tune the base folder with `-book-root`, or disable organization entirely with `-no-sort`.
 
 ### Flags
 
@@ -188,7 +198,11 @@ scp /tmp/nm-localsend root@<kobo-ip>:/mnt/onboard/.adds/nm/localsend
 -alias       Device name shown in LocalSend 
              (default: auto-detected as "<Model> <last-4-of-serial>" 
              from /mnt/onboard/.kobo/version)
--dir         Destination directory (default: /mnt/onboard/LocalSend)
+-dir         Destination for files that aren't organized 
+             (default: /mnt/onboard/LocalSend)
+-book-root   Base for the Calibre-style {Author}/{Title} layout 
+             (default: /mnt/onboard)
+-no-sort     Disable {Author}/{Title} organization (books stay in -dir)
 -no-rescan   Skip Nickel library rescan after receiving books
 -no-ui       Daemon mode: no modal dialog, stop with SIGTERM
 ```

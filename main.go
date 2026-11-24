@@ -2,10 +2,13 @@
 package main
 
 import (
+	"archive/zip"
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"encoding/xml"
 	"flag"
 	"fmt"
 	"html"
@@ -21,6 +24,7 @@ import (
 	"sync"
 	"syscall"
 	"time"
+	"unicode/utf8"
 )
 
 const (
@@ -36,7 +40,9 @@ var showVersion = flag.Bool("version", false, "print version and exit")
 
 var (
 	alias       = flag.String("alias", "", "nombre visible en LocalSend (default: auto-detected desde /mnt/onboard/.kobo/version)")
-	downloadDir = flag.String("dir", "/mnt/onboard/LocalSend", "carpeta destino")
+	downloadDir = flag.String("dir", "/mnt/onboard/LocalSend", "carpeta destino para archivos no organizables")
+	bookRoot    = flag.String("book-root", "/mnt/onboard", "raíz para organizar libros al estilo Calibre: {Autor}/{Título}{ext}")
+	noSort      = flag.Bool("no-sort", false, "no organizar libros recibidos en carpetas Autor/Título")
 	noRescan    = flag.Bool("no-rescan", false, "no pedir rescan de biblioteca")
 	noUI        = flag.Bool("no-ui", false, "no mostrar diálogo de control")
 	fingerprint = randHex(16)
@@ -46,6 +52,12 @@ var bookExts = map[string]bool{
 	".epub": true, ".kepub": true, ".pdf": true,
 	".cbz": true, ".cbr": true, ".txt": true,
 	".mobi": true, ".html": true, ".rtf": true,
+}
+
+// sortableExts: formatos cuyo metadato (título/autor) podemos leer del propio
+// archivo para organizarlos en carpetas Autor/Título como hace Calibre.
+var sortableExts = map[string]bool{
+	".epub": true, ".kepub": true,
 }
 
 // ---------- Tipos del protocolo ----------
@@ -288,6 +300,260 @@ func hasBook(paths []string) bool {
 	return false
 }
 
+// ---------- Organización estilo Calibre (Autor/Título) ----------
+
+const unknownAuthor = "Desconocido"
+
+type epubMeta struct {
+	Title  string
+	Author string // autor para la carpeta (author_sort si está disponible)
+}
+
+// epubMetadata lee META-INF/container.xml y el OPF de un ePub para extraer
+// título y autor. Devuelve error si no es un ePub legible.
+func epubMetadata(path string) (*epubMeta, error) {
+	zr, err := zip.OpenReader(path)
+	if err != nil {
+		return nil, fmt.Errorf("zip: %w", err)
+	}
+	defer zr.Close()
+
+	var container []byte
+	for _, f := range zr.File {
+		if strings.EqualFold(f.Name, "META-INF/container.xml") {
+			rc, err := f.Open()
+			if err != nil {
+				return nil, err
+			}
+			container, err = io.ReadAll(rc)
+			_ = rc.Close()
+			if err != nil {
+				return nil, err
+			}
+			break
+		}
+	}
+	if len(container) == 0 {
+		return nil, fmt.Errorf("sin META-INF/container.xml")
+	}
+
+	var c struct {
+		Rootfiles struct {
+			Rootfile []struct {
+				FullPath string `xml:"full-path,attr"`
+			} `xml:"rootfile"`
+		} `xml:"rootfiles"`
+	}
+	if err := xml.Unmarshal(container, &c); err != nil {
+		return nil, fmt.Errorf("container.xml: %w", err)
+	}
+	if len(c.Rootfiles.Rootfile) == 0 {
+		return nil, fmt.Errorf("container.xml sin rootfile")
+	}
+
+	var opfBytes []byte
+	opfName := c.Rootfiles.Rootfile[0].FullPath
+	for _, f := range zr.File {
+		if strings.EqualFold(f.Name, opfName) {
+			rc, err := f.Open()
+			if err != nil {
+				return nil, err
+			}
+			opfBytes, err = io.ReadAll(rc)
+			_ = rc.Close()
+			if err != nil {
+				return nil, err
+			}
+			break
+		}
+	}
+	if len(opfBytes) == 0 {
+		return nil, fmt.Errorf("no se encontró el OPF %q", opfName)
+	}
+
+	title, author := parseOPF(opfBytes)
+	if title == "" && author == "" {
+		return nil, fmt.Errorf("OPF sin título ni autor")
+	}
+	return &epubMeta{Title: title, Author: author}, nil
+}
+
+// parseOPF extrae título y autor del metadata de un OPF. Busca por nombre
+// local (title/creator/meta) para no depender de los prefijos de namespace.
+// El autor de carpeta sigue la misma jerarquía que Calibre:
+// calibre:author_sort → opf:file-as → dc:creator.
+func parseOPF(b []byte) (title, author string) {
+	dec := xml.NewDecoder(bytes.NewReader(b))
+	inMeta := false
+	var (
+		firstTitle   string
+		firstCreator string
+		fileAs       string
+		authorSort   string
+	)
+	for {
+		tok, err := dec.Token()
+		if err != nil {
+			break
+		}
+		switch t := tok.(type) {
+		case xml.StartElement:
+			switch t.Name.Local {
+			case "metadata":
+				inMeta = true
+			case "title":
+				if inMeta && firstTitle == "" {
+					var s string
+					if err := dec.DecodeElement(&s, &t); err == nil {
+						firstTitle = strings.TrimSpace(s)
+					}
+				}
+			case "creator":
+				if inMeta && firstCreator == "" {
+					var el struct {
+						Text   string `xml:",chardata"`
+						FileAs string `xml:"http://www.idpf.org/2007/opf file-as,attr"`
+					}
+					if err := dec.DecodeElement(&el, &t); err == nil {
+						el.Text = strings.TrimSpace(el.Text)
+						el.FileAs = strings.TrimSpace(el.FileAs)
+						if el.Text != "" || el.FileAs != "" {
+							firstCreator = el.Text
+							fileAs = el.FileAs
+						}
+					}
+				}
+			case "meta":
+				if inMeta {
+					var el struct {
+						Name    string `xml:"name,attr"`
+						Content string `xml:"content,attr"`
+					}
+					if err := dec.DecodeElement(&el, &t); err == nil {
+						if authorSort == "" && strings.EqualFold(el.Name, "calibre:author_sort") {
+							authorSort = strings.TrimSpace(el.Content)
+						}
+					}
+				}
+			}
+		case xml.EndElement:
+			if t.Name.Local == "metadata" {
+				inMeta = false
+			}
+		}
+	}
+	title = firstTitle
+	switch {
+	case authorSort != "":
+		author = authorSort
+	case fileAs != "":
+		author = fileAs
+	default:
+		author = firstCreator
+	}
+	return title, author
+}
+
+// sanitizeComponent deja un nombre apto para una ruta FAT32: quita los
+// caracteres prohibidos y de control, colapsa espacios, recorta puntitos
+// de los extremos y lo limita a un largo prudente.
+func sanitizeComponent(s string) string {
+	s = strings.Map(func(r rune) rune {
+		switch r {
+		case '<', '>', ':', '"', '/', '\\', '|', '?', '*':
+			return ' '
+		}
+		if r < 0x20 || r == 0x7f {
+			return ' '
+		}
+		return r
+	}, s)
+	s = strings.Join(strings.Fields(s), " ")
+	s = strings.Trim(s, " .")
+	return truncateBytes(s, 100)
+}
+
+func truncateBytes(s string, max int) string {
+	var b strings.Builder
+	n := 0
+	for _, r := range s {
+		l := utf8.RuneLen(r)
+		if n+l > max {
+			break
+		}
+		b.WriteRune(r)
+		n += l
+	}
+	return strings.TrimSpace(b.String())
+}
+
+func moveFile(src, dst string) error {
+	if err := os.Rename(src, dst); err == nil {
+		return nil
+	}
+	// Volúmenes distintos: copiar y borrar.
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	out, err := os.Create(dst)
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(out, in); err != nil {
+		_ = out.Close()
+		_ = os.Remove(dst)
+		return err
+	}
+	if err := out.Close(); err != nil {
+		_ = os.Remove(dst)
+		return err
+	}
+	return os.Remove(src)
+}
+
+// organizeBook intenta mover un libro a {bookRoot}/{Autor}/{Título}{ext},
+// igual que hace Calibre al guardarlo en el Kobo. Devuelve la ruta final
+// (la original si no se pudo organizar).
+func organizeBook(src string) string {
+	m, err := epubMetadata(src)
+	if err != nil {
+		log.Printf("[LS] %s: no organizable, queda en -dir: %v", filepath.Base(src), err)
+		return src
+	}
+	author := sanitizeComponent(m.Author)
+	title := sanitizeComponent(m.Title)
+	if author == "" {
+		author = unknownAuthor
+	}
+	if title == "" {
+		title = sanitizeComponent(strings.TrimSuffix(filepath.Base(src), filepath.Ext(src)))
+	}
+	dir := filepath.Join(*bookRoot, author)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		log.Printf("[LS] no pude crear %s: %v", dir, err)
+		return src
+	}
+	dst := uniquePath(filepath.Join(dir, title+strings.ToLower(filepath.Ext(src))))
+	if err := moveFile(src, dst); err != nil {
+		log.Printf("[LS] no pude mover %s → %s: %v", src, dst, err)
+		return src
+	}
+	log.Printf("[LS] organizado: %s → %s", src, dst)
+	return dst
+}
+
+// displayPath muestra una ruta compacta relativa a bookRoot (o el nombre
+// base si está fuera), para los toasts.
+func displayPath(p string) string {
+	rel, err := filepath.Rel(*bookRoot, p)
+	if err == nil && rel != "." && !strings.HasPrefix(rel, "..") {
+		return rel
+	}
+	return filepath.Base(p)
+}
+
 // ---------- Notificaciones / UI ----------
 
 func haveQndb() bool {
@@ -432,6 +698,13 @@ func handleUpload(w http.ResponseWriter, r *http.Request) {
 	if closeErr != nil {
 		log.Printf("[LS] err cerrando %s: %v", out, closeErr)
 	}
+
+	// Libros: organizar al estilo Calibre (Autor/Título) si podemos leer el
+	// metadato. El resto se queda en -dir.
+	if !*noSort && sortableExts[strings.ToLower(filepath.Ext(out))] {
+		out = organizeBook(out)
+	}
+
 	log.Printf("[LS] guardado: %s (%d B)", out, n)
 
 	var done bool
@@ -460,7 +733,7 @@ func handleUpload(w http.ResponseWriter, r *http.Request) {
 		go func() {
 			var msg string
 			if len(saved) == 1 {
-				msg = "Recibido: " + filepath.Base(saved[0])
+				msg = "Recibido: " + displayPath(saved[0])
 			} else {
 				msg = fmt.Sprintf("Recibidos %d archivos de %s", len(saved), sender)
 			}
@@ -575,14 +848,14 @@ func main() {
 	if *showVersion {
 		fmt.Println(Version)
 		os.Exit(0)
-	}	
+	}
 	if *alias == "" {
-    	*alias = detectAlias()
+		*alias = detectAlias()
 	}
 	if err := os.MkdirAll(*downloadDir, 0o755); err != nil {
 		log.Fatalf("no puedo crear %s: %v", *downloadDir, err)
 	}
-	log.Printf("[LS] alias=%q fp=%s dir=%s", *alias, fingerprint, *downloadDir)
+	log.Printf("[LS] alias=%q fp=%s dir=%s book-root=%s sort=%v", *alias, fingerprint, *downloadDir, *bookRoot, !*noSort)
 
 	// HTTP
 	mux := http.NewServeMux()
